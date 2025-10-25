@@ -11,6 +11,9 @@ INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock) VALUES (?,
 sqlite3.register_converter(
     "timestamp", lambda v: datetime.fromisoformat(v.decode()),
 )
+sqlite3.register_adapter(
+    datetime, lambda dt: dt.isoformat(),
+)
 sqlite3.register_converter(
     "json", lambda v: json.loads(v.decode()),
 )
@@ -48,12 +51,43 @@ def pull():
         else:
             print('Nenhum dado recebido do servidor.')
 
+
+def show_database(rows):
+    if len(rows) == 0:
+        print('Nenhum registro para editar.')
+        return
+    print(f'{'Registros locais':=^120}')
+    print(f'{'#':>3} | {'ID':<38} | {'Valor':<20} | {'VC':<20} | {'Timestamp':<27}')
+    print('=' * 120)
+    for i, row in enumerate(rows):
+        print(f"{i:>3} | {row[0]:<38} | {row[1]:<20} | {str(row[2]):<20} | {row[3].isoformat():<27}")
+        print('-' * 120)
+
 # inserir dado localmente
 def insert():
     value: str = str(input('Digite um valor: '))
     cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {'CA': 1}))
     con.commit()
     print("Valor inserido localmente.")
+
+# editar dado localmente
+def edit():
+    cur.execute("SELECT * FROM registers")
+    rows = cur.fetchall()
+    show_database(rows)
+    index: int = int(input('Selecione o índice do registro a ser editado: '))
+    if index < 0 or index >= len(rows):
+        print('Índice inválido.')
+        return
+    new_value: str = str(input('Digite o novo valor: '))
+    selected_row = rows[index]
+    vc = selected_row[2]
+    vc['CA'] = vc.get('CA', 0) + 1
+    cur.execute("UPDATE registers SET value = ?, vector_clock = ?, timestamp = ? WHERE id = ?",
+                (new_value, vc, datetime.now(), selected_row[0]))
+    con.commit()
+    print("Valor editado localmente.")
+
 
 print("Bem-vindo ao cliente A")
 print("Sincronizando com o servidor...")
@@ -78,11 +112,7 @@ while (True):
     elif option.upper() == 'I':
         insert()
     elif option.upper() == 'E':
-        # editar dado localmente
-        pass
-    elif option.upper() == 'H':
-        # mostrar ajuda
-        pass
+        edit()
     elif option.upper() == 'Q':
         break
     
