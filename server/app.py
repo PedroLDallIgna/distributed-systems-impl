@@ -74,7 +74,11 @@ def merge_vcs(vc_sender, vc_receiver):
     return merged
 
 
-def post_registro(data):
+@app.post('/registro')
+def post_registro():
+    data = request.get_json()
+    app.logger.info("Recebendo: " + str(data))
+    
     registers = data.get('registers', [])
     db = get_db()
     cur = db.cursor()
@@ -112,8 +116,11 @@ def post_registro(data):
                 cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
 
     db.commit()
+    
+    return {'status': 'pushed'}, 201
 
 
+@app.get('/registro')
 def get_registro():
     cur = get_db().cursor()
     cur.execute("SELECT * FROM registers")
@@ -126,21 +133,10 @@ def get_registro():
             'timestamp': row[3].isoformat()
         } for row in rows
     ]
-    return results
+    
+    app.logger.info("Enviando: " + str(results))
+    return {'registers': results}, 200
 
-
-@app.route('/registro', methods=['GET', 'POST'])
-def registro():
-    if request.method == 'POST':
-        data = request.get_json()
-        app.logger.info("Recebendo: " + str(data))
-        post_registro(data)
-        return {'status': 'pushed'}, 201
-
-    elif request.method == 'GET':
-        results = get_registro()
-        app.logger.info("Enviando: " + str(results))
-        return {'registers': results}, 200
 
 if __name__ == "__main__":
     with sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES) as init_con:
