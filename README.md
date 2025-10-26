@@ -1,5 +1,14 @@
 # Vector Clock
 
+## Grupo
+
+- Adrian
+- Enzo Molossi
+- João Zanardo
+- Pedro Dall' Igna
+- Rafaela
+- Tales
+
 ## Definições
 
 ### O que é
@@ -51,7 +60,7 @@ import sys  # funções do sistema
 from flask import Flask, request, g  # importação do Flask
 from datetime import datetime  # utilitários de data e hora
 import json  # utilitários para manipulação de JSON
-from enum import Enum
+from enum import Enum  # classe para criação de enums
 ```
 
 #### Constantes
@@ -74,6 +83,13 @@ sqlite3.register_converter(
     "timestamp",
     lambda v: datetime.fromisoformat(v.decode()),
 )
+
+# tipo `datetime` do Python será transformado para `string` (timestamp) no banco
+sqlite3.register_adapter(
+    datetime,
+    lambda dt: dt.isoformat(),
+)
+
 # tipo `json` no banco será transformado em objeto `dict` do Python
 sqlite3.register_converter(
     "json",
@@ -95,6 +111,8 @@ app = Flask(__name__)
 
 #### Conexão e instanciação do banco de dados SQLite
 
+Para utilizar o SQLite juntamente com o Flask, é recomendado manter uma única instância do banco de dados atribuída para toda a aplicação. Portanto, a instância é mantida como global e recuperada por meio da função `get_db`. Para conectar ao banco de dados os parâmetros passados são: o nome do arquivo do banco (obrigatório), e, no nosso caso, são passados parâmetros adicionais para considerar os novos tipos (_converters_ e _adapters_) definidos anteriormente e uma _flag_ de checagem como falsa.
+
 ```python
 # função para buscar a instância única do banco de dados
 def get_db():
@@ -106,7 +124,11 @@ def get_db():
         )
         g.db.row_factory = sqlite3.Row
     return g.db
+```
 
+Quando a aplicação é finalizada (`@app.teardown_appcontext`), será executada a função `close_db` para fechar a conexão com o banco de dados e excluir a instância global.
+
+```python
 # fechar o banco de dados quando finaliza a aplicação Flask
 @app.teardown_appcontext
 def close_db(exception):
@@ -116,6 +138,8 @@ def close_db(exception):
 ```
 
 #### Funções para tratar os Vector Clocks
+
+A função `compare_vcs` recebe dois Vector Clocks (`vc_sender` e `vc_receiver`) como parâmetros e faz a comparação entre eles para estabelecer a ordem de alteração: qual foi posterior, se são iguais ou se há conflito.
 
 ```python
 class VectorClockComparison(Enum):
@@ -152,6 +176,8 @@ def compare_vcs(vc_sender, vc_receiver):
         return VectorClockComparison.CONCORRENTE
 ```
 
+A função `merge_vcs` também recebe dois Vector Clocks (`vc_sender` e `vc_receiver`) como parâmetros, mas esta mescla (_merge_) ambos, que consiste basicamente em pegar o valor máximo de cada nó presente nos Vector Clocks.
+
 ```python
 def merge_vcs(vc_sender, vc_receiver):
     merged = {}
@@ -163,7 +189,7 @@ def merge_vcs(vc_sender, vc_receiver):
 
 #### Função de tratamento do método POST
 
-Esta função receberá um JSON no _body_ da requisição para sincronizar com o banco "central" e fazer os devidos tratamentos de conflitos.
+A função `post_registro` receberá um dicionário (objeto), oriundo da requisição, com os registros do cliente para sincronizar com o banco "central" e fazer os devidos tratamentos a partir da comparação entre os Vector Clocks.
 
 ```python
 def post_registro(data):
@@ -179,27 +205,22 @@ def post_registro(data):
         # compara os vector clocks
         vc_comparison = compare_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
         if vc_comparison == VectorClockComparison.SENDER_POSTERIOR:
-            app.logger.info("Sender é posterior. Aceitando dados.")
             # aceita o dado do sender pois é posterior (atualiza o vector clock)
             item['vector_clock'] = merged_vc
             cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
         elif vc_comparison == VectorClockComparison.RECEIVER_POSTERIOR:
-            app.logger.info("Sender é anterior. Rejeitando dados.")
             # rejeita o dado do sender pois é anterior (atualiza o vector clock)
             cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
         elif vc_comparison == VectorClockComparison.CONCORRENTE:
-            app.logger.info("Conflito detectado entre dados. Verificando timestamps.")
             # vector clocks são concorrentes
             # verifica o timestamp para resolver o conflito
             timestamp_sender = item['timestamp']
             timestamp_receiver = cur.execute("SELECT timestamp FROM registers WHERE id = ?", (item['id'],)).fetchone()[0]
             if timestamp_sender > timestamp_receiver:
-                app.logger.info("Sender é mais recente. Aceitando dados.")
                 # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
                 item['vector_clock'] = merged_vc
                 cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
             else:
-                app.logger.info("Receiver é mais recente. Rejeitando dados.")
                 # se o receiver for mais recente, rejeita o dado do sender (atualiza o vector clock)
                 cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
 
@@ -208,7 +229,7 @@ def post_registro(data):
 
 #### Função de tratamento do método GET
 
-Está função pegará os dados cadastrados no banco de dados "central" e enviará como resposta os registros definitivos. Aqui está a "fonte de verdade".
+Está função pegará os dados cadastrados no banco de dados "central" e enviará como resposta os registros definitivos. No servidor estará contida a "fonte de verdade".
 
 ```python
 def get_registro():
@@ -233,23 +254,24 @@ A API possuirá apenas uma rota (`/registros`) que pode ser acessada por dois m�
 - Na rota `GET` ela retornará todos os registros cadastrados no banco do servidor (central).
 
 - Na rota `POST` ela receberá um registro em formato JSON e cadastrará no banco do servidor (central) fazendo os devidos tratamentos, como resolução de conflitos.
+
   - _body_ da requisição:
 
-```json
-{
-  "registers": [
+    ```json
     {
-      "id": "uuidv4",
-      "value": "valor",
-      "vector_clock": {
-        "server": 0,
-        "client_x": 0
-      },
-      "timestamp": 0.0
+      "registers": [
+        {
+          "id": "uuidv4",
+          "value": "valor",
+          "vector_clock": {
+            "server": 0,
+            "client_x": 0
+          },
+          "timestamp": 0.0
+        }
+      ]
     }
-  ]
-}
-```
+    ```
 
 ```python
 @app.route('/registro', methods=['GET', 'POST'])
@@ -281,6 +303,15 @@ if __name__ == "__main__":
 
 ### Clientes
 
+O cliente possuirá um banco de dados SQLite local onde serão salvos os registros criados e editados.
+
+O usuário poderá interagir com o cliente por meio de comandos.
+
+- [S]ync: sincronizar o estado local do banco com o do servidor. Basicamente é feito um push (envio para o servidor) e um pull (busca do servidor) dos registros.
+- [I]nsert: inserir um dado no banco local do cliente.
+- [E]dit: editar um dado no banco local do cliente.
+- [Q]uit: terminar a execução da aplicação cliente.
+
 Estrutura de arquivos:
 
 ```
@@ -293,16 +324,20 @@ client/
 
 #### Imports
 
+Para a implementação do servidor, serão utilizados alguns pacotes da biblioteca do Python.
+
 ```python
-import sqlite3
-import sys
-from datetime import datetime
-import requests
-import json
-from uuid import uuid4
+import sqlite3  # biblioteca SQLite para o python
+import sys  # funções do sistema
+from datetime import datetime  # utilitários de data e hora
+import requests  # funções para realizar requisições HTTP, como GET e POST
+import json  # utilitários para manipulação de JSON
+from uuid import uuid4  # utilitários para geração de UUIDs
 ```
 
 #### Constantes
+
+Variáveis constantes, como nome do banco de dados e queries SQL.
 
 ```python
 SYNC_DATABASE_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
@@ -342,6 +377,8 @@ sqlite3.register_adapter(
 
 #### Conexão, instanciação e inicialização do banco de dados SQLite
 
+Cria um conexão com o banco de dados SQLite, passando como parâmetros o nome do arquivo de banco de dados e uma configuração para usar os tipos (_converters_ e _adapters_) anteriormente definidos.
+
 ```python
 con = sqlite3.connect('client_a.db', detect_types=sqlite3.PARSE_DECLTYPES)
 
@@ -353,6 +390,8 @@ cur = con.cursor()
 ```
 
 #### Função de envio dos dados para o banco central (push)
+
+Esta função pega os registros criados localmente e os envia para o servidor por meio de uma request POST.
 
 ```python
 def push():
@@ -369,6 +408,8 @@ def push():
 
 #### Função de busca das informações para sincronização local (pull)
 
+Esta função realizar uma request GET no servidor para atualizar o banco de dados local com os dados centrais.
+
 ```python
 def pull():
     response = requests.get('http://localhost:5000/registro')
@@ -383,6 +424,8 @@ def pull():
 
 #### Função para inserção de dado localmente
 
+Esta função insere um dado no banco de dados SQLite local.
+
 ```python
 def insert():
     value: str = str(input('Digite um valor: '))
@@ -392,6 +435,10 @@ def insert():
 ```
 
 #### Função para edição de dado localmente
+
+A função `show_database` é uma função utilitária para desenhar em uma tabela os registros que estão contidos no banco de dados SQLite local.
+
+A função `edit` realiza a alteração de um dado do banco de dados SQLite local, incrementando o Vector Clock.
 
 ```python
 # função para desenhar uma tabela com os registros cadastrados
@@ -425,6 +472,8 @@ def edit():
 ```
 
 #### Execução base da aplicação e interação com usuário
+
+Este é o trecho de código que realiza a interação do usuário com o cliente, lendo os comandos e valores de entrada e realizando as operações de acordo.
 
 ```python
 print("Bem-vindo ao cliente A")
