@@ -189,71 +189,7 @@ def merge_vcs(vc_sender, vc_receiver):
 
 #### Função de tratamento do método POST
 
-A função `post_registro` receberá um dicionário (objeto), oriundo da requisição, com os registros do cliente para sincronizar com o banco "central" e fazer os devidos tratamentos a partir da comparação entre os Vector Clocks.
-
-```python
-def post_registro(data):
-    registers = data.get('registers', [])
-    db = get_db()
-    cur = db.cursor()
-
-    for item in registers:
-        vc_sender = item['vector_clock']
-        vc_receiver = cur.execute("SELECT vector_clock FROM registers WHERE id = ?", (item['id'],)).fetchone()
-        # mescla os vector clocks
-        merged_vc = merge_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
-        # compara os vector clocks
-        vc_comparison = compare_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
-        if vc_comparison == VectorClockComparison.SENDER_POSTERIOR:
-            # aceita o dado do sender pois é posterior (atualiza o vector clock)
-            item['vector_clock'] = merged_vc
-            cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
-        elif vc_comparison == VectorClockComparison.RECEIVER_POSTERIOR:
-            # rejeita o dado do sender pois é anterior (atualiza o vector clock)
-            cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
-        elif vc_comparison == VectorClockComparison.CONCORRENTE:
-            # vector clocks são concorrentes
-            # verifica o timestamp para resolver o conflito
-            timestamp_sender = item['timestamp']
-            timestamp_receiver = cur.execute("SELECT timestamp FROM registers WHERE id = ?", (item['id'],)).fetchone()[0]
-            if timestamp_sender > timestamp_receiver:
-                # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
-                item['vector_clock'] = merged_vc
-                cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
-            else:
-                # se o receiver for mais recente, rejeita o dado do sender (atualiza o vector clock)
-                cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
-
-    db.commit()
-```
-
-#### Função de tratamento do método GET
-
-Está função pegará os dados cadastrados no banco de dados "central" e enviará como resposta os registros definitivos. No servidor estará contida a "fonte de verdade".
-
-```python
-def get_registro():
-    cur = get_db().cursor()
-    cur.execute("SELECT * FROM registers")
-    rows = cur.fetchall()
-    results = [
-        {
-            'id': row[0],
-            'value': row[1],
-            'vector_clock': row[2],
-            'timestamp': row[3].isoformat()
-        } for row in rows
-    ]
-    return results
-```
-
-#### Definição da rota da aplicação
-
-A API possuirá apenas uma rota (`/registros`) que pode ser acessada por dois métodos: `GET` e `POST`.
-
-- Na rota `GET` ela retornará todos os registros cadastrados no banco do servidor (central).
-
-- Na rota `POST` ela receberá um registro em formato JSON e cadastrará no banco do servidor (central) fazendo os devidos tratamentos, como resolução de conflitos.
+A função `post_registro` manipula requisições para o endpoint `/registro` com o método `POST`. Ela receberá um registro em formato JSON e cadastrará no banco do servidor (central) fazendo os devidos tratamentos, como resolução de conflitos.
 
   - _body_ da requisição:
 
@@ -274,18 +210,73 @@ A API possuirá apenas uma rota (`/registros`) que pode ser acessada por dois m�
     ```
 
 ```python
-@app.route('/registro', methods=['GET', 'POST'])
-def registro():
-    if request.method == 'POST':
-        data = request.get_json()
-        app.logger.info("Recebendo: " + str(data))
-        post_registro(data)
-        return {'status': 'pushed'}, 201
+@app.post('/registro')
+def post_registro():
+    data = request.get_json()
+    app.logger.info("Recebendo: " + str(data))
+    
+    registers = data.get('registers', [])
+    db = get_db()
+    cur = db.cursor()
 
-    elif request.method == 'GET':
-        results = get_registro()
-        app.logger.info("Enviando: " + str(results))
-        return {'registers': results}, 200
+    for item in registers:
+        vc_sender = item['vector_clock']
+        vc_receiver = cur.execute("SELECT vector_clock FROM registers WHERE id = ?", (item['id'],)).fetchone()
+        # mescla os vector clocks
+        merged_vc = merge_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
+        # compara os vector clocks
+        vc_comparison = compare_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
+        if vc_comparison == VectorClockComparison.SENDER_POSTERIOR:
+            app.logger.info("Sender é posterior. Aceitando dados.")
+            # aceita o dado do sender pois é posterior (atualiza o vector clock)
+            item['vector_clock'] = merged_vc
+            cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
+        elif vc_comparison == VectorClockComparison.RECEIVER_POSTERIOR:
+            app.logger.info("Sender é anterior. Rejeitando dados.")
+            # rejeita o dado do sender pois é anterior (atualiza o vector clock)
+            cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
+        elif vc_comparison == VectorClockComparison.CONCORRENTE:
+            app.logger.info("Conflito detectado entre dados. Verificando timestamps.")
+            # vector clocks são concorrentes
+            # verifica o timestamp para resolver o conflito
+            timestamp_sender = item['timestamp']
+            timestamp_receiver = cur.execute("SELECT timestamp FROM registers WHERE id = ?", (item['id'],)).fetchone()[0]
+            if timestamp_sender > timestamp_receiver:
+                app.logger.info("Sender é mais recente. Aceitando dados.")
+                # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
+                item['vector_clock'] = merged_vc
+                cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
+            else:
+                app.logger.info("Receiver é mais recente. Rejeitando dados.")
+                # se o receiver for mais recente, rejeita o dado do sender (atualiza o vector clock)
+                cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
+
+    db.commit()
+    
+    return {'status': 'pushed'}, 201
+```
+
+#### Função de tratamento do método GET
+
+A função `get_registro` manipula requisições para o endpoint `/registro` com o método `GET`. Ela retornará todos os registros cadastrados no banco do servidor (central).
+
+```python
+@app.get('/registro')
+def get_registro():
+    cur = get_db().cursor()
+    cur.execute("SELECT * FROM registers")
+    rows = cur.fetchall()
+    results = [
+        {
+            'id': row[0],
+            'value': row[1],
+            'vector_clock': row[2],
+            'timestamp': row[3].isoformat()
+        } for row in rows
+    ]
+    
+    app.logger.info("Enviando: " + str(results))
+    return {'registers': results}, 200
 ```
 
 #### Execução do servidor
