@@ -1,31 +1,41 @@
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 import requests
 import json
 from uuid import uuid4
 import os
+import re
 
 SERVER_HOST = os.getenv('SERVER_HOST', '127.0.0.1')
 SERVER_PORT = os.getenv('SERVER_PORT', 5000)
 SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SYNC_DATABASE_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
-INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock) VALUES (?, ?, ?)"
+INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock, timestamp) VALUES (?, ?, ?, ?)"
+SELECT_ALL_QUERY = "SELECT * FROM registers"
+UPDATE_BY_ID_QUERY = "UPDATE registers SET value = ?, vector_clock = ?, timestamp = ? WHERE id = ?"
 
 sqlite3.register_converter(
-    "timestamp", lambda v: datetime.fromisoformat(v.decode()),
+    "timestamp",
+    lambda v: datetime.fromisoformat(v.decode()),
 )
 sqlite3.register_adapter(
-    datetime, lambda dt: dt.isoformat(),
+    datetime,
+    lambda dt: dt.isoformat(),
 )
 sqlite3.register_converter(
-    "json", lambda v: json.loads(v.decode()),
+    "json",
+    lambda v: json.loads(v.decode()),
 )
 sqlite3.register_adapter(
-    dict, lambda d: json.dumps(d),
+    dict,
+    lambda d: json.dumps(d),
 )
 
-con = sqlite3.connect('client_a.db', detect_types=sqlite3.PARSE_DECLTYPES)
+client_name_entry = str(input('Digite o nome do cliente: '))
+client_name = re.sub(r'\W+', '', client_name_entry).lower()
+
+con = sqlite3.connect(f'client_{client_name}.db', detect_types=sqlite3.PARSE_DECLTYPES)
 
 with open('schema.sql') as f:
     con.executescript(f.read())
@@ -34,7 +44,7 @@ cur = con.cursor()
 
 # sincronizar o banco de dados
 def push():
-    cur.execute("SELECT * FROM registers")
+    cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
     data = [{'id': row[0], 'value': row[1], 'vector_clock': row[2], 'timestamp': row[3].isoformat()} for row in rows]
     if len(data) == 0:
@@ -70,13 +80,13 @@ def show_database(rows):
 # inserir dado localmente
 def insert():
     value: str = str(input('Digite um valor: '))
-    cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {'CA': 1}))
+    cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {client_name: 1}, datetime.now(timezone.utc)))
     con.commit()
     print("Valor inserido localmente.")
 
 # editar dado localmente
 def edit():
-    cur.execute("SELECT * FROM registers")
+    cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
     show_database(rows)
     index: int = int(input('Selecione o índice do registro a ser editado: '))
@@ -86,11 +96,19 @@ def edit():
     new_value: str = str(input('Digite o novo valor: '))
     selected_row = rows[index]
     vc = selected_row[2]
-    vc['CA'] = vc.get('CA', 0) + 1
-    cur.execute("UPDATE registers SET value = ?, vector_clock = ?, timestamp = ? WHERE id = ?",
-                (new_value, vc, datetime.now(), selected_row[0]))
+    vc[client_name] = vc.get(client_name, 0) + 1
+    cur.execute(
+        UPDATE_BY_ID_QUERY,
+        (new_value, vc, datetime.now(timezone.utc), selected_row[0])
+    )
     con.commit()
     print("Valor editado localmente.")
+
+# visualizar os dados locais
+def view():
+    cur.execute("SELECT * FROM registers")
+    rows = cur.fetchall()
+    show_database(rows)
 
 
 print("Bem-vindo ao cliente A")
@@ -100,13 +118,14 @@ pull()
 print("Sincronização concluída.")
 print("Tudo pronto!")
 
-option: str = str(input("""
-    [S]ync
+call_to_action_message = """    [S]ync
     [I]nsert
     [E]dit
-    [H]elp
+    [V]iew
     [Q]uit
-Selecione uma opção: """))
+Selecione uma opção: """
+
+option: str = str(input(call_to_action_message))
 
 while (True):
     if option.upper() == 'S':
@@ -117,16 +136,12 @@ while (True):
         insert()
     elif option.upper() == 'E':
         edit()
+    elif option.upper() == 'V':
+        view()
     elif option.upper() == 'Q':
         break
-    
-    option: str = str(input("""
-    [S]ync
-    [I]nsert
-    [E]dit
-    [H]elp
-    [Q]uit
-Selecione uma opção: """))
-        
+
+    option: str = str(input(call_to_action_message))
+
 con.close()
 sys.exit()
