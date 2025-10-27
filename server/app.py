@@ -7,15 +7,26 @@ from enum import Enum
 
 DB_PATH = 'server.db'
 HOST_ADDRESS = os.getenv('HOST_ADDRESS', '127.0.0.1')
+SELECT_VC_BY_ID_QUERY = "SELECT vector_clock FROM registers WHERE id = ?"
+INSERT_REGISTER_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
+UPDATE_VC_BY_ID_QUERY = "UPDATE registers SET vector_clock = ? WHERE id = ?"
+SELECT_TIMESTAMP_BY_ID_QUERY = "SELECT timestamp FROM registers WHERE id = ?"
 
 sqlite3.register_converter(
-    "timestamp", lambda v: datetime.fromisoformat(v.decode()),
-)
-sqlite3.register_converter(
-    "json", lambda v: json.loads(v.decode()),
+    "timestamp",
+    lambda v: datetime.fromisoformat(v.decode()),
 )
 sqlite3.register_adapter(
-    dict, lambda d: json.dumps(d),
+    datetime,
+    lambda dt: dt.isoformat(),
+)
+sqlite3.register_converter(
+    "json",
+    lambda v: json.loads(v.decode()),
+)
+sqlite3.register_adapter(
+    dict,
+    lambda d: json.dumps(d),
 )
 
 app = Flask(__name__)
@@ -86,7 +97,7 @@ def post_registro():
 
     for item in registers:
         vc_sender = item['vector_clock']
-        vc_receiver = cur.execute("SELECT vector_clock FROM registers WHERE id = ?", (item['id'],)).fetchone()
+        vc_receiver = cur.execute(SELECT_VC_BY_ID_QUERY, (item['id'],)).fetchone()
         # mescla os vector clocks
         merged_vc = merge_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
         # compara os vector clocks
@@ -95,26 +106,26 @@ def post_registro():
             app.logger.info("Sender é posterior. Aceitando dados.")
             # aceita o dado do sender pois é posterior (atualiza o vector clock)
             item['vector_clock'] = merged_vc
-            cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
+            cur.execute(INSERT_REGISTER_QUERY, item)
         elif vc_comparison == VectorClockComparison.RECEIVER_POSTERIOR:
             app.logger.info("Sender é anterior. Rejeitando dados.")
             # rejeita o dado do sender pois é anterior (atualiza o vector clock)
-            cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
+            cur.execute(UPDATE_VC_BY_ID_QUERY, (merged_vc, item['id']))
         elif vc_comparison == VectorClockComparison.CONCORRENTE:
             app.logger.info("Conflito detectado entre dados. Verificando timestamps.")
             # vector clocks são concorrentes
             # verifica o timestamp para resolver o conflito
             timestamp_sender = item['timestamp']
-            timestamp_receiver = cur.execute("SELECT timestamp FROM registers WHERE id = ?", (item['id'],)).fetchone()[0]
+            timestamp_receiver = cur.execute(SELECT_TIMESTAMP_BY_ID_QUERY, (item['id'],)).fetchone()[0]
             if timestamp_sender > timestamp_receiver:
                 app.logger.info("Sender é mais recente. Aceitando dados.")
                 # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
                 item['vector_clock'] = merged_vc
-                cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
+                cur.execute(INSERT_REGISTER_QUERY, item)
             else:
                 app.logger.info("Receiver é mais recente. Rejeitando dados.")
                 # se o receiver for mais recente, rejeita o dado do sender (atualiza o vector clock)
-                cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
+                cur.execute(UPDATE_VC_BY_ID_QUERY, (merged_vc, item['id']))
 
     db.commit()
     
