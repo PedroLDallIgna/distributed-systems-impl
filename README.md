@@ -56,7 +56,7 @@ Para a implementação do servidor, serão utilizados alguns pacotes da bibliote
 
 ```python
 import sqlite3  # biblioteca SQLite para o python
-import sys  # funções do sistema
+import os  # funções do sistema operacional
 from flask import Flask, request, g  # importação do Flask
 from datetime import datetime  # utilitários de data e hora
 import json  # utilitários para manipulação de JSON
@@ -69,6 +69,12 @@ Variáveis constantes, como nome do banco de dados e queries SQL.
 
 ```python
 DB_PATH = 'server.db'
+HOST_ADDRESS = os.getenv('HOST_ADDRESS', '127.0.0.1')
+SELECT_ALL_QUERY = "SELECT * FROM registers"
+SELECT_VC_BY_ID_QUERY = "SELECT vector_clock FROM registers WHERE id = ?"
+INSERT_REGISTER_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
+UPDATE_VC_BY_ID_QUERY = "UPDATE registers SET vector_clock = ? WHERE id = ?"
+SELECT_TIMESTAMP_BY_ID_QUERY = "SELECT timestamp FROM registers WHERE id = ?"
 ```
 
 #### Definições de `converters` e `adapters` do SQLite
@@ -221,7 +227,7 @@ def post_registro():
 
     for item in registers:
         vc_sender = item['vector_clock']
-        vc_receiver = cur.execute("SELECT vector_clock FROM registers WHERE id = ?", (item['id'],)).fetchone()
+        vc_receiver = cur.execute(SELECT_VC_BY_ID_QUERY, (item['id'],)).fetchone()
         # mescla os vector clocks
         merged_vc = merge_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
         # compara os vector clocks
@@ -230,26 +236,26 @@ def post_registro():
             app.logger.info("Sender é posterior. Aceitando dados.")
             # aceita o dado do sender pois é posterior (atualiza o vector clock)
             item['vector_clock'] = merged_vc
-            cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
+            cur.execute(INSERT_REGISTER_QUERY, item)
         elif vc_comparison == VectorClockComparison.RECEIVER_POSTERIOR:
             app.logger.info("Sender é anterior. Rejeitando dados.")
             # rejeita o dado do sender pois é anterior (atualiza o vector clock)
-            cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
+            cur.execute(UPDATE_VC_BY_ID_QUERY, (merged_vc, item['id']))
         elif vc_comparison == VectorClockComparison.CONCORRENTE:
             app.logger.info("Conflito detectado entre dados. Verificando timestamps.")
             # vector clocks são concorrentes
             # verifica o timestamp para resolver o conflito
             timestamp_sender = item['timestamp']
-            timestamp_receiver = cur.execute("SELECT timestamp FROM registers WHERE id = ?", (item['id'],)).fetchone()[0]
+            timestamp_receiver = cur.execute(SELECT_TIMESTAMP_BY_ID_QUERY, (item['id'],)).fetchone()[0]
             if timestamp_sender > timestamp_receiver:
                 app.logger.info("Sender é mais recente. Aceitando dados.")
                 # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
                 item['vector_clock'] = merged_vc
-                cur.execute("INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)", item)
+                cur.execute(INSERT_REGISTER_QUERY, item)
             else:
                 app.logger.info("Receiver é mais recente. Rejeitando dados.")
                 # se o receiver for mais recente, rejeita o dado do sender (atualiza o vector clock)
-                cur.execute("UPDATE registers SET vector_clock = ? WHERE id = ?", (merged_vc, item['id']))
+                cur.execute(UPDATE_VC_BY_ID_QUERY, (merged_vc, item['id']))
 
     db.commit()
     
@@ -264,7 +270,7 @@ A função `get_registro` manipula requisições para o endpoint `/registro` com
 @app.get('/registro')
 def get_registro():
     cur = get_db().cursor()
-    cur.execute("SELECT * FROM registers")
+    cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
     results = [
         {
@@ -298,10 +304,11 @@ O cliente possuirá um banco de dados SQLite local onde serão salvos os registr
 
 O usuário poderá interagir com o cliente por meio de comandos.
 
-- [S]ync: sincronizar o estado local do banco com o do servidor. Basicamente é feito um push (envio para o servidor) e um pull (busca do servidor) dos registros.
-- [I]nsert: inserir um dado no banco local do cliente.
-- [E]dit: editar um dado no banco local do cliente.
-- [Q]uit: terminar a execução da aplicação cliente.
+- `[S]ync`: sincronizar o estado local do banco com o do servidor. Basicamente é feito um push (envio para o servidor) e um pull (busca do servidor) dos registros.
+- `[I]nsert`: inserir um dado no banco local do cliente.
+- `[E]dit`: editar um dado no banco local do cliente.
+- `[V]iew`: visualizar estado do banco local.
+- `[Q]uit`: terminar a execução da aplicação cliente.
 
 Estrutura de arquivos:
 
@@ -320,10 +327,12 @@ Para a implementação do servidor, serão utilizados alguns pacotes da bibliote
 ```python
 import sqlite3  # biblioteca SQLite para o python
 import sys  # funções do sistema
-from datetime import datetime  # utilitários de data e hora
+from datetime import datetime, timezone  # utilitários de data e hora
 import requests  # funções para realizar requisições HTTP, como GET e POST
 import json  # utilitários para manipulação de JSON
 from uuid import uuid4  # utilitários para geração de UUIDs
+import os  # utilitários do sistema operacional
+import re  # utilitários de regex
 ```
 
 #### Constantes
@@ -331,8 +340,13 @@ from uuid import uuid4  # utilitários para geração de UUIDs
 Variáveis constantes, como nome do banco de dados e queries SQL.
 
 ```python
+SERVER_HOST = os.getenv('SERVER_HOST', '127.0.0.1')
+SERVER_PORT = os.getenv('SERVER_PORT', 5000)
+SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SYNC_DATABASE_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
-INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock) VALUES (?, ?, ?)"
+INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock, timestamp) VALUES (?, ?, ?, ?)"
+SELECT_ALL_QUERY = "SELECT * FROM registers"
+UPDATE_BY_ID_QUERY = "UPDATE registers SET value = ?, vector_clock = ?, timestamp = ? WHERE id = ?"
 ```
 
 #### Definições de `converters` e `adapters` do SQLite
@@ -350,7 +364,8 @@ sqlite3.register_converter(
 
 # tipo `datetime` do Python será transformado para `string` (timestamp) no banco
 sqlite3.register_adapter(
-    datetime, lambda dt: dt.isoformat(),
+    datetime,
+    lambda dt: dt.isoformat(),
 )
 
 # tipo `json` no banco será transformado em objeto `dict` do Python
@@ -371,7 +386,11 @@ sqlite3.register_adapter(
 Cria um conexão com o banco de dados SQLite, passando como parâmetros o nome do arquivo de banco de dados e uma configuração para usar os tipos (_converters_ e _adapters_) anteriormente definidos.
 
 ```python
-con = sqlite3.connect('client_a.db', detect_types=sqlite3.PARSE_DECLTYPES)
+# pega dado de entrada para definir nome do cliente
+client_name_entry = str(input('Digite o nome do cliente: '))
+client_name = re.sub(r'\W+', '', client_name_entry).lower()
+
+con = sqlite3.connect(f'client_{client_name}.db', detect_types=sqlite3.PARSE_DECLTYPES)
 
 # monta tabelas conforme arquivo de schema
 with open('schema.sql') as f:
@@ -386,13 +405,14 @@ Esta função pega os registros criados localmente e os envia para o servidor po
 
 ```python
 def push():
-    cur.execute("SELECT * FROM registers")
+    cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
     data = [{'id': row[0], 'value': row[1], 'vector_clock': row[2], 'timestamp': row[3].isoformat()} for row in rows]
     if len(data) == 0:
         print('Nada para sincronizar.')
         return
-    response = requests.post('http://localhost:5000/registro', json={'registers': data})
+    print("enviando: " + str(data))
+    response = requests.post(f'{SERVER_URL}/registro', json={'registers': data})
     if response.status_code == 201:
         print("Dados enviados ao servidor com sucesso.")
 ```
@@ -403,7 +423,7 @@ Esta função realizar uma request GET no servidor para atualizar o banco de dad
 
 ```python
 def pull():
-    response = requests.get('http://localhost:5000/registro')
+    response = requests.get(f'{SERVER_URL}/registro')
     if response.status_code == 200:
         data = response.json()
         if 'registers' in data and len(data['registers']) > 0:
@@ -420,7 +440,7 @@ Esta função insere um dado no banco de dados SQLite local.
 ```python
 def insert():
     value: str = str(input('Digite um valor: '))
-    cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {'CA': 1}))
+    cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {client_name: 1}, datetime.now(timezone.utc)))
     con.commit()
     print("Valor inserido localmente.")
 ```
@@ -437,15 +457,15 @@ def show_database(rows):
     if len(rows) == 0:
         print('Nenhum registro para editar.')
         return
-    print(f'{'Registros locais':=^120}')
-    print(f'{'#':>3} | {'ID':<38} | {'Valor':<20} | {'VC':<20} | {'Timestamp':<27}')
+    print(f"{'Registros locais':=^120}")
+    print(f"{'#':>3} | {'ID':<38} | {'Valor':<20} | {'VC':<20} | {'Timestamp':<27}")
     print('=' * 120)
     for i, row in enumerate(rows):
         print(f"{i:>3} | {row[0]:<38} | {row[1]:<20} | {str(row[2]):<20} | {row[3].isoformat():<27}")
         print('-' * 120)
 
 def edit():
-    cur.execute("SELECT * FROM registers")
+    cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
     show_database(rows)
     index: int = int(input('Selecione o índice do registro a ser editado: '))
@@ -455,11 +475,24 @@ def edit():
     new_value: str = str(input('Digite o novo valor: '))
     selected_row = rows[index]
     vc = selected_row[2]
-    vc['CA'] = vc.get('CA', 0) + 1
-    cur.execute("UPDATE registers SET value = ?, vector_clock = ?, timestamp = ? WHERE id = ?",
-                (new_value, vc, datetime.now(), selected_row[0]))
+    vc[client_name] = vc.get(client_name, 0) + 1
+    cur.execute(
+        UPDATE_BY_ID_QUERY,
+        (new_value, vc, datetime.now(timezone.utc), selected_row[0])
+    )
     con.commit()
     print("Valor editado localmente.")
+```
+
+#### Função para visualizar os dados localmente
+
+Utiliza a função `show_database()` definida anteriormente para mostrar o estado do banco de dados SQLite.
+
+```python
+def view():
+    cur.execute(SELECT_ALL_QUERY)
+    rows = cur.fetchall()
+    show_database(rows)
 ```
 
 #### Execução base da aplicação e interação com usuário
@@ -467,20 +500,21 @@ def edit():
 Este é o trecho de código que realiza a interação do usuário com o cliente, lendo os comandos e valores de entrada e realizando as operações de acordo.
 
 ```python
-print("Bem-vindo ao cliente A")
+print("Bem-vindo ao cliente")
 print("Sincronizando com o servidor...")
 push()
 pull()
 print("Sincronização concluída.")
 print("Tudo pronto!")
 
-option: str = str(input("""
-    [S]ync
+call_to_action_message = """    [S]ync
     [I]nsert
     [E]dit
-    [H]elp
+    [V]iew
     [Q]uit
-Selecione uma opção: """))
+Selecione uma opção: """
+
+option: str = str(input(call_to_action_message))
 
 while (True):
     if option.upper() == 'S':
@@ -491,16 +525,12 @@ while (True):
         insert()
     elif option.upper() == 'E':
         edit()
+    elif option.upper() == 'V':
+        view()
     elif option.upper() == 'Q':
         break
 
-    option: str = str(input("""
-    [S]ync
-    [I]nsert
-    [E]dit
-    [H]elp
-    [Q]uit
-Selecione uma opção: """))
+    option: str = str(input(call_to_action_message))
 
 con.close()
 sys.exit()
