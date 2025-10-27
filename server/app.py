@@ -1,11 +1,12 @@
 import sqlite3
-import sys
+import os
 from flask import Flask, request, g
 from datetime import datetime
 import json
 from enum import Enum
 
 DB_PATH = 'server.db'
+HOST_ADDRESS = os.getenv('HOST_ADDRESS', '127.0.0.1')
 
 sqlite3.register_converter(
     "timestamp", lambda v: datetime.fromisoformat(v.decode()),
@@ -143,4 +144,4 @@ if __name__ == "__main__":
         with app.open_resource('schema.sql') as f:
             init_con.executescript(f.read().decode('utf8'))
 
-    app.run()
+    app.run(host=HOST_ADDRESS, port=5000)

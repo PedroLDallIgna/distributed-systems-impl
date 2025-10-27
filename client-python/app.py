@@ -4,7 +4,11 @@ from datetime import datetime
 import requests
 import json
 from uuid import uuid4
+import os
 
+SERVER_HOST = os.getenv('SERVER_HOST', '127.0.0.1')
+SERVER_PORT = os.getenv('SERVER_PORT', 5000)
+SERVER_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SYNC_DATABASE_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
 INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock) VALUES (?, ?, ?)"
 
@@ -37,12 +41,12 @@ def push():
         print('Nada para sincronizar.')
         return
     print("enviando: " + str(data))
-    response = requests.post('http://localhost:5000/registro', json={'registers': data})
+    response = requests.post(f'{SERVER_URL}/registro', json={'registers': data})
     if response.status_code == 201:
         print("Dados enviados ao servidor com sucesso.")
 
 def pull():
-    response = requests.get('http://localhost:5000/registro')
+    response = requests.get(f'{SERVER_URL}/registro')
     if response.status_code == 200:
         data = response.json()
         if 'registers' in data and len(data['registers']) > 0:
@@ -56,8 +60,8 @@ def show_database(rows):
     if len(rows) == 0:
         print('Nenhum registro para editar.')
         return
-    print(f'{'Registros locais':=^120}')
-    print(f'{'#':>3} | {'ID':<38} | {'Valor':<20} | {'VC':<20} | {'Timestamp':<27}')
+    print(f"{'Registros locais':=^120}")
+    print(f"{'#':>3} | {'ID':<38} | {'Valor':<20} | {'VC':<20} | {'Timestamp':<27}")
     print('=' * 120)
     for i, row in enumerate(rows):
         print(f"{i:>3} | {row[0]:<38} | {row[1]:<20} | {str(row[2]):<20} | {row[3].isoformat():<27}")
