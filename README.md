@@ -514,7 +514,7 @@ call_to_action_message = """    [S]ync
     [Q]uit
 Selecione uma opção: """
 
-option: str = str(input(call_to_action_message))
+option = str(input(call_to_action_message))
 
 while (True):
     if option.upper() == 'S':
@@ -530,7 +530,7 @@ while (True):
     elif option.upper() == 'Q':
         break
 
-    option: str = str(input(call_to_action_message))
+    option = str(input(call_to_action_message))
 
 con.close()
 sys.exit()
