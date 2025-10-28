@@ -19,14 +19,6 @@ sqlite3.register_converter(
     "timestamp",
     lambda v: datetime.fromisoformat(v.decode()),
 )
-sqlite3.register_adapter(
-    datetime,
-    lambda dt: dt.isoformat(),
-)
-sqlite3.register_adapter(
-    datetime,
-    lambda dt: dt.isoformat(),
-)
 
 sqlite3.register_adapter(
     datetime,
@@ -121,7 +113,7 @@ def view():
     show_database(rows)
 
 
-print("Bem-vindo ao cliente A")
+print("Bem-vindo ao cliente")
 print("Sincronizando com o servidor...")
 push()
 pull()
