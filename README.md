@@ -9,12 +9,6 @@
 - Rafaela Bortoloso
 - Tales Aguiar
 
-## Definições
-
-### O que é
-
-### Como funciona
-
 ## Implementação
 
 ### Banco de Dados
