@@ -4,23 +4,40 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const readline = require('readline');
 
+const SERVER_HOST = process.env.SERVER_HOST || '127.0.0.1';
+const SERVER_PORT = process.env.SERVER_PORT || 5000;
+const SERVER_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
 const SYNC_DATABASE_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES ($id, $value, $vector_clock, $timestamp)";
-const INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock) VALUES (?, ?, ?)";
+const INSERT_VALUE_QUERY = "INSERT INTO registers (id, value, vector_clock, timestamp) VALUES (?, ?, ?, ?)";
 
-const db = new sqlite3.Database('client_b.db');
+let db;
+let clientName;
 
-try {
-    const schema = fs.readFileSync('schema.sql', 'utf8');
-    db.exec(schema, (err) => {
-        if (err) {
-            console.error('Error creating database schema:', err);
-            process.exit(1);
-        }
-        console.log('Database initialized successfully');
-    });
-} catch (error) {
-    console.error('Error reading schema file:', error);
-    process.exit(1);
+const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+});
+
+async function getClientName() {
+    const clientNameEntry = new Promise((resolve) => rl.question('Digite o nome do cliente: ', resolve));
+    const clientName = (await clientNameEntry).replace(/\W+/g, '').toLowerCase();
+    return clientName;
+}
+
+function initDb() {
+    try {
+        const schema = fs.readFileSync('schema.sql', 'utf8');
+        db.exec(schema, (err) => {
+            if (err) {
+                console.error('Error creating database schema:', err);
+                process.exit(1);
+            }
+            console.log('Database initialized successfully');
+        });
+    } catch (error) {
+        console.error('Error reading schema file:', error);
+        process.exit(1);
+    }
 }
 
 const dbGet = (query, params) => new Promise((resolve, reject) => {
@@ -53,7 +70,7 @@ async function push() {
         }
 
         console.log("enviando:", JSON.stringify(data));
-        const response = await axios.post('http://localhost:5000/registro', { registers: data });
+        const response = await axios.post(`${SERVER_URL}/registro`, { registers: data });
         if (response.status === 201) {
             console.log("Dados enviados ao servidor com sucesso.");
         }
@@ -64,7 +81,7 @@ async function push() {
 
 async function pull() {
     try {
-        const response = await axios.get('http://localhost:5000/registro');
+        const response = await axios.get(`${SERVER_URL}/registro`);
         if (response.data.registers && response.data.registers.length > 0) {
             for (const register of response.data.registers) {
                 await dbRun(SYNC_DATABASE_QUERY, {
@@ -100,8 +117,8 @@ async function insert(rl) {
     const value = await new Promise(resolve => {
         rl.question('Digite um valor: ', resolve);
     });
-    
-    await dbRun(INSERT_VALUE_QUERY, [uuidv4(), value, JSON.stringify({CA: 1})]);
+
+    await dbRun(INSERT_VALUE_QUERY, [uuidv4(), value, JSON.stringify({[clientName]: 1}), new Date().toISOString()]);
     console.log("Valor inserido localmente.");
 }
 
@@ -124,7 +141,7 @@ async function edit(rl) {
 
     const selectedRow = rows[index];
     const vc = JSON.parse(selectedRow.vector_clock);
-    vc.CA = (vc.CA || 0) + 1;
+    vc[clientName] = (vc[clientName] || 0) + 1;
 
     await dbRun(
         "UPDATE registers SET value = ?, vector_clock = ?, timestamp = ? WHERE id = ?",
@@ -134,25 +151,29 @@ async function edit(rl) {
     console.log("Valor editado localmente.");
 }
 
+async function view() {
+    const rows = await dbGet("SELECT * FROM registers", []);
+    showDatabase(rows);
+}
+
 async function main() {
-    console.log("Bem-vindo ao cliente B");
+    clientName = await getClientName();
+    db = new sqlite3.Database(`client_${clientName}.db`);
+    initDb();
+
+    console.log("Bem-vindo ao cliente");
     console.log("Sincronizando com o servidor...");
     await push();
     await pull();
     console.log("Sincronização concluída.");
     console.log("Tudo pronto!");
 
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-
     const showMenu = () => {
         console.log(`
     [S]ync
     [I]nsert
     [E]dit
-    [H]elp
+    [V]iew
     [Q]uit`);
         return new Promise(resolve => {
             rl.question('Selecione uma opção: ', resolve);
@@ -173,6 +194,9 @@ async function main() {
                 break;
             case 'E':
                 await edit(rl);
+                break;
+            case 'V':
+                await view();
                 break;
             case 'Q':
                 rl.close();
