@@ -1,0 +1,8 @@
+DROP TABLE IF EXISTS registers;
+
+CREATE TABLE IF NOT EXISTS registers(
+  id TEXT PRIMARY KEY,
+  value TEXT,
+  vector_clock JSON,
+  timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
