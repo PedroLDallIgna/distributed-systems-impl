@@ -115,8 +115,9 @@ def post_registro():
             app.logger.info("Conflito detectado entre dados. Verificando timestamps.")
             # vector clocks são concorrentes
             # verifica o timestamp para resolver o conflito
-            timestamp_sender = item['timestamp']
-            timestamp_receiver = cur.execute(SELECT_TIMESTAMP_BY_ID_QUERY, (item['id'],)).fetchone()[0]
+            timestamp_sender = datetime.fromisoformat(item['timestamp']).timestamp()
+            receiver = cur.execute(SELECT_TIMESTAMP_BY_ID_QUERY, (item['id'],)).fetchone()[0]
+            timestamp_receiver = receiver.timestamp()
             if timestamp_sender > timestamp_receiver:
                 app.logger.info("Sender é mais recente. Aceitando dados.")
                 # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
