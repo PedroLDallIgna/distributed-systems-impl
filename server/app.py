@@ -17,10 +17,6 @@ sqlite3.register_converter(
     "timestamp",
     lambda v: datetime.fromisoformat(v.decode()),
 )
-sqlite3.register_adapter(
-    datetime,
-    lambda dt: dt.isoformat(),
-)
 
 sqlite3.register_adapter(
     datetime,
