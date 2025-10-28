@@ -19,6 +19,14 @@ sqlite3.register_converter(
     "timestamp",
     lambda v: datetime.fromisoformat(v.decode()),
 )
+sqlite3.register_adapter(
+    datetime,
+    lambda dt: dt.isoformat(),
+)
+sqlite3.register_adapter(
+    datetime,
+    lambda dt: dt.isoformat(),
+)
 
 sqlite3.register_adapter(
     datetime,
@@ -46,17 +54,28 @@ with open('schema.sql') as f:
 cur = con.cursor()
 
 def push():
-    pass
+    cur.execute(SELECT_ALL_QUERY)
+    rows = cur.fetchall()
+    data = [{'id': row[0], 'value': row[1], 'vector_clock': row[2], 'timestamp': row[3].isoformat()} for row in rows]
+    if len(data) == 0:
+        print('Nada para sincronizar.')
+        return
+    print("enviando: " + str(data))
+    response = requests.post(f'{SERVER_URL}/registro', json={'registers': data})
+    if response.status_code == 201:
+        print("Dados enviados ao servidor com sucesso.")
 
 def pull():
-    pass
+    response = requests.get(f'{SERVER_URL}/registro')
+    if response.status_code == 200:
+        data = response.json()
+        if 'registers' in data and len(data['registers']) > 0:
+            cur.executemany(SYNC_DATABASE_QUERY, data['registers'])
+            con.commit()
+        else:
+            print('Nenhum dado recebido do servidor.')
 
-def insert():
-    value: str = str(input('Digite um valor: '))
-    cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {client_name: 1}, datetime.now(timezone.utc)))
-    con.commit()
-    print("Valor inserido localmente.")
-    
+
 def show_database(rows):
     if len(rows) == 0:
         print('Nenhum registro para editar.')
@@ -68,6 +87,14 @@ def show_database(rows):
         print(f"{i:>3} | {row[0]:<38} | {row[1]:<20} | {str(row[2]):<20} | {row[3].isoformat():<27}")
         print('-' * 120)
 
+# inserir dado localmente
+def insert():
+    value: str = str(input('Digite um valor: '))
+    cur.execute(INSERT_VALUE_QUERY, (str(uuid4()), value, {client_name: 1}, datetime.now(timezone.utc)))
+    con.commit()
+    print("Valor inserido localmente.")
+
+# editar dado localmente
 def edit():
     cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
@@ -86,13 +113,15 @@ def edit():
     )
     con.commit()
     print("Valor editado localmente.")
-    
+
+# visualizar os dados locais
 def view():
     cur.execute(SELECT_ALL_QUERY)
     rows = cur.fetchall()
     show_database(rows)
 
-print("Bem-vindo ao cliente")
+
+print("Bem-vindo ao cliente A")
 print("Sincronizando com o servidor...")
 push()
 pull()

@@ -17,6 +17,10 @@ sqlite3.register_converter(
     "timestamp",
     lambda v: datetime.fromisoformat(v.decode()),
 )
+sqlite3.register_adapter(
+    datetime,
+    lambda dt: dt.isoformat(),
+)
 
 sqlite3.register_adapter(
     datetime,
@@ -58,18 +62,104 @@ class VectorClockComparison(Enum):
     CONCORRENTE = 4
 
 def compare_vcs(vc_sender, vc_receiver):
-    pass
+    if vc_sender == vc_receiver:
+        return VectorClockComparison.IGUAIS
+
+    sender_is_causal = True
+    receiver_is_causal = True
+
+    all_nodes = set(vc_sender.keys()) | set(vc_receiver.keys())
+
+    for node in all_nodes:
+        sender_count = vc_sender.get(node, 0)
+        receiver_count = vc_receiver.get(node, 0)
+
+        if sender_count > receiver_count:
+            # sender viu algo que o receiver não viu, então o receiver não é causal
+            receiver_is_causal = False
+        if receiver_count > sender_count:
+            # receiver viu algo que o sender não viu, então o sender não é causal
+            sender_is_causal = False
+
+    if sender_is_causal and not receiver_is_causal:
+        return VectorClockComparison.SENDER_POSTERIOR
+    elif receiver_is_causal and not sender_is_causal:
+        return VectorClockComparison.RECEIVER_POSTERIOR
+    else:
+        return VectorClockComparison.CONCORRENTE
+
 
 def merge_vcs(vc_sender, vc_receiver):
-    pass
+    merged = {}
+    all_nodes = set(vc_sender.keys()) | set(vc_receiver.keys())
+    for node in all_nodes:
+        merged[node] = max(vc_sender.get(node, 0), vc_receiver.get(node, 0))
+    return merged
+
 
 @app.post('/registro')
 def post_registro():
-    pass
+    data = request.get_json()
+    app.logger.info("Recebendo: " + str(data))
+    
+    registers = data.get('registers', [])
+    db = get_db()
+    cur = db.cursor()
+
+    for item in registers:
+        vc_sender = item['vector_clock']
+        vc_receiver = cur.execute(SELECT_VC_BY_ID_QUERY, (item['id'],)).fetchone()
+        # mescla os vector clocks
+        merged_vc = merge_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
+        # compara os vector clocks
+        vc_comparison = compare_vcs(vc_sender, vc_receiver[0] if vc_receiver != None else {})
+        if vc_comparison == VectorClockComparison.SENDER_POSTERIOR:
+            app.logger.info("Sender é posterior. Aceitando dados.")
+            # aceita o dado do sender pois é posterior (atualiza o vector clock)
+            item['vector_clock'] = merged_vc
+            cur.execute(INSERT_REGISTER_QUERY, item)
+        elif vc_comparison == VectorClockComparison.RECEIVER_POSTERIOR:
+            app.logger.info("Sender é anterior. Rejeitando dados.")
+            # rejeita o dado do sender pois é anterior (atualiza o vector clock)
+            cur.execute(UPDATE_VC_BY_ID_QUERY, (merged_vc, item['id']))
+        elif vc_comparison == VectorClockComparison.CONCORRENTE:
+            app.logger.info("Conflito detectado entre dados. Verificando timestamps.")
+            # vector clocks são concorrentes
+            # verifica o timestamp para resolver o conflito
+            timestamp_sender = datetime.fromisoformat(item['timestamp']).timestamp()
+            receiver = cur.execute(SELECT_TIMESTAMP_BY_ID_QUERY, (item['id'],)).fetchone()[0]
+            timestamp_receiver = receiver.timestamp()
+            if timestamp_sender > timestamp_receiver:
+                app.logger.info("Sender é mais recente. Aceitando dados.")
+                # se o sender for mais recente, aceita o dado do sender (atualiza o vector clock)
+                item['vector_clock'] = merged_vc
+                cur.execute(INSERT_REGISTER_QUERY, item)
+            else:
+                app.logger.info("Receiver é mais recente. Rejeitando dados.")
+                # se o receiver for mais recente, rejeita o dado do sender (atualiza o vector clock)
+                cur.execute(UPDATE_VC_BY_ID_QUERY, (merged_vc, item['id']))
+
+    db.commit()
+    
+    return {'status': 'pushed'}, 201
+
 
 @app.get('/registro')
 def get_registro():
-    pass
+    cur = get_db().cursor()
+    cur.execute("SELECT * FROM registers")
+    rows = cur.fetchall()
+    results = [
+        {
+            'id': row[0],
+            'value': row[1],
+            'vector_clock': row[2],
+            'timestamp': row[3].isoformat()
+        } for row in rows
+    ]
+    
+    app.logger.info("Enviando: " + str(results))
+    return {'registers': results}, 200
 
 
 if __name__ == "__main__":
@@ -77,4 +167,4 @@ if __name__ == "__main__":
         with app.open_resource('schema.sql') as f:
             init_con.executescript(f.read().decode('utf8'))
 
-    app.run()
+    app.run(host=HOST_ADDRESS, port=5000)
