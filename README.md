@@ -64,6 +64,8 @@ Variáveis constantes, como nome do banco de dados e queries SQL.
 ```python
 DB_PATH = 'server.db'
 HOST_ADDRESS = os.getenv('HOST_ADDRESS', '127.0.0.1')
+HOST_PORT = int(os.getenv('HOST_PORT', '5000'))
+DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
 SELECT_ALL_QUERY = "SELECT * FROM registers"
 SELECT_VC_BY_ID_QUERY = "SELECT vector_clock FROM registers WHERE id = ?"
 INSERT_REGISTER_QUERY = "INSERT OR REPLACE INTO registers (id, value, vector_clock, timestamp) VALUES (:id, :value, :vector_clock, :timestamp)"
@@ -290,7 +292,7 @@ if __name__ == "__main__":
             init_con.executescript(f.read().decode('utf8'))
 
     # execução da API Flask
-    app.run(host=HOST_ADDRESS, port=5000)
+    app.run(host=HOST_ADDRESS, port=HOST_PORT, debug=DEBUG)
 ```
 
 ### Clientes
