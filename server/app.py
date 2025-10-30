@@ -77,4 +77,4 @@ if __name__ == "__main__":
         with app.open_resource('schema.sql') as f:
             init_con.executescript(f.read().decode('utf8'))
 
-    app.run()
+    app.run(host=HOST_ADDRESS, port=5000)

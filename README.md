@@ -290,7 +290,7 @@ if __name__ == "__main__":
             init_con.executescript(f.read().decode('utf8'))
 
     # execução da API Flask
-    app.run()
+    app.run(host=HOST_ADDRESS, port=5000)
 ```
 
 ### Clientes
